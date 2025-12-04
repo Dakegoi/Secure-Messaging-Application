@@ -1,11 +1,12 @@
 const API_BASE = "/api";
-let authToken = localStorage.getItem("token");
-let currentUser = localStorage.getItem("username");
+// Use cookies instead of localStorage for session token
+let currentUser = null;
 
 const homePage = document.getElementById("home-page");
 const signupPage = document.getElementById("signup-page");
 const loginPage = document.getElementById("login-page");
 const forgotPage = document.getElementById("forgot-page");
+const totpSetupPage = document.getElementById("totp-setup-page");
 const appPage = document.getElementById("app-page");
 const sessionUser = document.getElementById("session-user");
 const recipientSelect = document.getElementById("recipient-select");
@@ -26,25 +27,39 @@ const goSignupBtn = document.getElementById("go-signup-btn");
 const goForgotBtn = document.getElementById("go-forgot-btn");
 const goLoginFromForgotBtn = document.getElementById("go-login-from-forgot");
 const forgotForm = document.getElementById("forgot-form");
+const totpSection = document.getElementById("totp-section");
+const setupTotpBtn = document.getElementById("setup-totp-btn");
+const disableTotpBtn = document.getElementById("disable-totp-btn");
+const totpSetupDoneBtn = document.getElementById("totp-setup-done-btn");
+const registerPasswordInput = document.getElementById("register-password");
+
+// Password validation regex
+const passwordRegex = {
+  minLength: /.{8,}/,
+  hasLetter: /[a-zA-Z]/,
+  hasNumber: /[0-9]/,
+  hasSpecial: /[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/
+};
 
 function showToast(message, isError = false) {
   toast.textContent = message;
   toast.classList.remove("hidden", "error");
   if (isError) toast.classList.add("error");
-  setTimeout(() => toast.classList.add("hidden"), 2500);
+  setTimeout(() => toast.classList.add("hidden"), 5000);
 }
 
-async function api(path, { method = "GET", body } = {}) {
+async function api(path, { method = "GET", body, credentials = "include" } = {}) {
+  // credentials: "include" ensures cookies are sent with requests
   const headers = { "Content-Type": "application/json" };
-  if (authToken) headers.Authorization = `Bearer ${authToken}`;
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
+    credentials,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
-    throw new Error(detail.detail || "Request failed");
+    throw new Error(detail.detail || detail.message || "Request failed");
   }
   return res.json();
 }
@@ -54,29 +69,42 @@ function showPage(page) {
   signupPage.classList.add("hidden");
   loginPage.classList.add("hidden");
   forgotPage.classList.add("hidden");
+  totpSetupPage.classList.add("hidden");
   appPage.classList.add("hidden");
   if (page === "home") homePage.classList.remove("hidden");
   if (page === "signup") signupPage.classList.remove("hidden");
   if (page === "login") loginPage.classList.remove("hidden");
   if (page === "forgot") forgotPage.classList.remove("hidden");
+  if (page === "totp-setup") totpSetupPage.classList.remove("hidden");
   if (page === "app") appPage.classList.remove("hidden");
 }
 
-function setAuthenticated(username, token) {
+function validatePassword(password) {
+  if (!passwordRegex.minLength.test(password)) {
+    return { valid: false, message: "Password must be at least 8 characters long" };
+  }
+  if (!passwordRegex.hasLetter.test(password)) {
+    return { valid: false, message: "Password must contain at least one letter" };
+  }
+  if (!passwordRegex.hasNumber.test(password)) {
+    return { valid: false, message: "Password must contain at least one number" };
+  }
+  if (!passwordRegex.hasSpecial.test(password)) {
+    return { valid: false, message: "Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:,.<>?)" };
+  }
+  return { valid: true, message: "" };
+}
+
+function setAuthenticated(username) {
   currentUser = username;
-  authToken = token;
-  if (token) {
-    localStorage.setItem("token", token);
-    localStorage.setItem("username", username);
+  if (username) {
     showPage("app");
     sessionUser.textContent = `Logged in as ${username}`;
     refreshData();
   } else {
-    localStorage.removeItem("token");
-    localStorage.removeItem("username");
+    showPage("home");
     recipientSelect.innerHTML = "";
     inboxEl.innerHTML = "";
-    showPage("home");
   }
 }
 
@@ -130,27 +158,85 @@ function renderInbox(messages) {
   });
 }
 
+// Password validation on input
+if (registerPasswordInput) {
+  registerPasswordInput.addEventListener("input", (e) => {
+    const validation = validatePassword(e.target.value);
+    const hint = document.getElementById("password-hint");
+    if (e.target.value.length > 0) {
+      if (!validation.valid) {
+        hint.textContent = validation.message;
+        hint.style.color = "#dc2626";
+      } else {
+        hint.textContent = "Password meets requirements ✓";
+        hint.style.color = "#16a34a";
+      }
+    } else {
+      hint.textContent = "Password must be at least 8 characters with at least one letter, one number, and one special character";
+      hint.style.color = "";
+    }
+  });
+}
+
 registerForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(registerForm));
+  
+  // Client-side password validation
+  const validation = validatePassword(data.password);
+  if (!validation.valid) {
+    showToast(validation.message, true);
+    return;
+  }
+  
   try {
     await api("/register", { method: "POST", body: data });
     showToast("Registration successful");
     registerForm.reset();
+    showPage("login");
   } catch (error) {
     showToast(error.message, true);
   }
 });
 
+let pendingUsername = null;
+let pendingPassword = null;
+
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(loginForm));
-  try {
-    const response = await api("/login", { method: "POST", body: data });
-    setAuthenticated(response.username, response.token);
-    loginForm.reset();
-  } catch (error) {
-    showToast(error.message, true);
+  
+  // Store credentials for TOTP verification
+  if (!totpSection.classList.contains("hidden")) {
+    // TOTP verification step
+    try {
+      const response = await api("/login", { method: "POST", body: data });
+      setAuthenticated(response.username);
+      loginForm.reset();
+      totpSection.classList.add("hidden");
+      pendingUsername = null;
+      pendingPassword = null;
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  } else {
+    // Initial login attempt
+    pendingUsername = data.username;
+    pendingPassword = data.password;
+    try {
+      const response = await api("/login", { method: "POST", body: { username: data.username, password: data.password } });
+      if (response.requires_totp) {
+        // Show TOTP input
+        totpSection.classList.remove("hidden");
+        showToast("TOTP code required. Enter the 6-digit code from your authenticator app.");
+      } else {
+        // Login successful
+        setAuthenticated(response.username);
+        loginForm.reset();
+      }
+    } catch (error) {
+      showToast(error.message, true);
+    }
   }
 });
 
@@ -200,7 +286,7 @@ logoutBtn.addEventListener("click", async () => {
   } catch (error) {
     console.warn(error);
   }
-  setAuthenticated(null, null);
+  setAuthenticated(null);
 });
 
 getStartedBtn.addEventListener("click", () => {
@@ -213,6 +299,7 @@ goLoginBtnHome.addEventListener("click", () => {
 
 goLoginBtn.addEventListener("click", () => {
   showPage("login");
+  totpSection.classList.add("hidden");
 });
 
 goSignupBtn.addEventListener("click", () => {
@@ -236,22 +323,62 @@ forgotForm.addEventListener("submit", async (event) => {
   }
   try {
     const response = await api("/forgot-password", { method: "POST", body: data });
-    showToast("Reset code generated. See alert (demo) and open reset page.");
-    alert(`Your reset code (demo only, would be emailed): ${response.code}`);
-    window.location.href = `/reset_password.html?email=${encodeURIComponent(data.email)}`;
+    // Show user-friendly message (token is sent via email, not returned)
+    showToast(response.message || "Reset token generated. Please check your email.");
+    // Clear form
+    forgotForm.reset();
+    // Optionally redirect to login page after a delay
+    setTimeout(() => {
+      showPage("login");
+    }, 2000);
+  } catch (error) {
+    // Handle network errors or other issues
+    showToast(error.message || "Failed to process reset request. Please try again.", true);
+  }
+});
+
+setupTotpBtn.addEventListener("click", async () => {
+  try {
+    const response = await api("/totp/setup", { method: "POST" });
+    document.getElementById("totp-qr-code").src = response.qr_code;
+    document.getElementById("totp-secret").textContent = response.secret;
+    showPage("totp-setup");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+});
+
+totpSetupDoneBtn.addEventListener("click", () => {
+  showPage("app");
+  showToast("TOTP enabled. You'll be asked for a code on next login.");
+});
+
+disableTotpBtn.addEventListener("click", async () => {
+  if (!confirm("Are you sure you want to disable two-factor authentication?")) {
+    return;
+  }
+  try {
+    await api("/totp/disable", { method: "POST" });
+    showToast("TOTP disabled");
+    disableTotpBtn.classList.add("hidden");
+    setupTotpBtn.classList.remove("hidden");
   } catch (error) {
     showToast(error.message, true);
   }
 });
 
 async function bootstrap() {
-  if (!authToken) return;
+  // Check if user is authenticated by trying to fetch user data
   try {
-    await refreshData();
+    const users = await api("/users");
+    // If we get here, we're authenticated
+    // Try to get username from a user endpoint or session
+    // For now, we'll just show the app page
     showPage("app");
-    sessionUser.textContent = `Logged in as ${currentUser}`;
+    refreshData();
   } catch {
-    setAuthenticated(null, null);
+    // Not authenticated
+    setAuthenticated(null);
   }
 }
 

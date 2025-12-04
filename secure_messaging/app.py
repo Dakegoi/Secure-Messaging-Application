@@ -2,18 +2,19 @@
 from __future__ import annotations
 import secrets
 import json
-import secrets
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from getpass import getpass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import x25519
 
 from . import crypto
 from .db import Database
-from .emailer import send_reset_code_email
+from .emailer import send_reset_token_email
+from .validation import validate_password
+from .totp import generate_totp_secret, generate_totp_qr_code, verify_totp
 
 
 @dataclass
@@ -28,6 +29,17 @@ class AuthService:
         self.db = database or Database()
 
     def register(self, username: str, password: str, email: str | None = None) -> None:
+        """
+        Register a new user with password complexity validation.
+        
+        Raises ValueError if password doesn't meet complexity requirements
+        or if username already exists.
+        """
+        # Validate password complexity
+        is_valid, error_msg = validate_password(password)
+        if not is_valid:
+            raise ValueError(error_msg)
+        
         if self.db.get_user(username):
             raise ValueError("User already exists")
         secrets, public_payload = crypto.generate_user_secrets()
@@ -42,17 +54,59 @@ class AuthService:
             "email": email,
             "reset_code": None,
             "reset_code_created_at": None,
+            "totp_secret": None,
+            "reset_token": None,
+            "reset_token_expires_at": None,
         }
         self.db.create_user(user_record)
 
-    def login(self, username: str, password: str) -> ActiveSession:
+    def login(self, username: str, password: str, totp_token: str | None = None) -> Tuple[ActiveSession, bool]:
+        """
+        Login a user with optional TOTP verification.
+        
+        Returns:
+            Tuple of (ActiveSession, requires_totp)
+            - If user has TOTP enabled and token not provided, returns (None, True)
+            - If TOTP token provided but invalid, raises ValueError
+            - If successful, returns (ActiveSession, False)
+        """
         user = self.db.get_user(username)
         if not user:
             raise ValueError("Unknown user")
         if not crypto.verify_password(password, user["password_hash"]):
             raise ValueError("Invalid credentials")
+        
+        # Check if TOTP is enabled
+        if user.get("totp_secret"):
+            if not totp_token:
+                # Password correct but TOTP required
+                return None, True
+            # Verify TOTP token
+            if not verify_totp(user["totp_secret"], totp_token):
+                raise ValueError("Invalid TOTP token")
+        
         secrets = crypto.unwrap_private_keys(password, user["wrapped_keys"])
-        return ActiveSession(username=username, secrets=secrets, public_profile=user["public"])
+        return ActiveSession(username=username, secrets=secrets, public_profile=user["public"]), False
+    
+    def setup_totp(self, username: str) -> Tuple[str, str]:
+        """
+        Generate TOTP secret and QR code for a user.
+        
+        Returns:
+            Tuple of (secret, qr_code_data_url)
+        """
+        user = self.db.get_user(username)
+        if not user:
+            raise ValueError("Unknown user")
+        
+        secret = generate_totp_secret(username)
+        qr_code = generate_totp_qr_code(secret, username)
+        self.db.set_totp_secret(username, secret)
+        return secret, qr_code
+    
+    def disable_totp(self, username: str) -> None:
+        """Disable TOTP for a user."""
+        self.db.set_totp_secret(username, None)
 
     def list_users(self) -> List[dict]:
         return self.db.list_users()
@@ -60,11 +114,18 @@ class AuthService:
     def reset_password_for_username(self, username: str, new_password: str) -> None:
         """
         Reset a user's password and key material.
+        
+        Validates password complexity before resetting.
 
         NOTE: For simplicity and security, this regenerates the user's keypair
         and deletes all stored messages to/from that user. Old messages can no
         longer be decrypted after a reset.
         """
+        # Validate password complexity
+        is_valid, error_msg = validate_password(new_password)
+        if not is_valid:
+            raise ValueError(error_msg)
+        
         user = self.db.get_user(username)
         if not user:
             raise ValueError("Unknown user")
@@ -81,24 +142,69 @@ class AuthService:
         self.db.reset_user(user_record)
         self.db.delete_messages_for_user(username)
 
-    def start_password_reset(self, email: str) -> str:
-        """Generate and store a 4-digit reset code for a user identified by email."""
+    def start_password_reset(self, email: str) -> None:
+        """
+        Generate and store a secure reset token with expiration (1 hour TTL).
+        Send the token to the user's registered email address.
+        
+        This is a production-ready implementation where the token is never exposed
+        to the frontend and is only sent via secure email.
+        
+        For security, this method does not reveal whether the email exists or not.
+        If the email is not registered, it silently succeeds (prevents email enumeration).
+        If SMTP fails, it raises an exception.
+        
+        Raises:
+            ValueError: If SMTP configuration is missing or email sending fails
+        """
         user = self.db.get_user_by_email(email)
         if not user:
-            raise ValueError("Unknown email")
-        code = f"{secrets.randbelow(10_000):04d}"
-        self.db.set_reset_code(user["username"], code, datetime.utcnow().isoformat())
-        # Fire-and-forget email; errors are swallowed inside send_reset_code_email
-        send_reset_code_email(email, code)
-        return code
+            # Security: Don't reveal whether email exists (prevents email enumeration)
+            # Silently return - the server endpoint will return generic success message
+            return
+        
+        # Generate secure token (32 bytes, URL-safe)
+        token = secrets.token_urlsafe(32)
+        expires_at = (datetime.utcnow() + timedelta(hours=1)).isoformat()
+        self.db.set_reset_token(user["username"], token, expires_at)
+        
+        # Build reset URL with token as query parameter
+        # In production, this would be your actual domain (e.g., https://yourdomain.com/reset_password.html?token=...)
+        reset_url = f"/reset_password.html?token={token}"
+        
+        # Send email with reset token
+        # This will raise ValueError if SMTP fails (configuration issue or network error)
+        try:
+            send_reset_token_email(email, token, reset_url)
+        except ValueError as e:
+            # Re-raise SMTP errors so they can be handled appropriately
+            # These are actual failures that should be reported
+            raise ValueError(f"Failed to send reset email. Please try again later or contact support.") from e
 
-    def complete_password_reset(self, email: str, code: str, new_password: str) -> None:
-        user = self.db.get_user_by_email(email)
+    def complete_password_reset(self, token: str, new_password: str) -> None:
+        """
+        Complete password reset using secure token.
+        
+        Validates token expiration and password complexity.
+        """
+        # Validate password complexity
+        is_valid, error_msg = validate_password(new_password)
+        if not is_valid:
+            raise ValueError(error_msg)
+        
+        user = self.db.get_user_by_reset_token(token)
         if not user:
-            raise ValueError("Unknown email")
-        if not user.get("reset_code") or user["reset_code"] != code:
-            raise ValueError("Invalid reset code")
+            raise ValueError("Invalid or expired reset token")
+        
+        # Check expiration
+        if user.get("reset_token_expires_at"):
+            expires_at = datetime.fromisoformat(user["reset_token_expires_at"])
+            if datetime.utcnow() > expires_at:
+                raise ValueError("Reset token has expired")
+        
         self.reset_password_for_username(user["username"], new_password)
+        # Clear reset token after successful reset
+        self.db.set_reset_token(user["username"], None, None)
 
 
 class MessagingService:
@@ -230,7 +336,11 @@ class SecureMessagingCLI:
         username = input("Username: ").strip()
         password = getpass("Password: ")
         try:
-            self.session = self.auth.login(username, password)
+            session, requires_totp = self.auth.login(username, password)
+            if requires_totp:
+                totp_token = input("TOTP code (6 digits): ").strip()
+                session, _ = self.auth.login(username, password, totp_token)
+            self.session = session
             print(f"Welcome {username}!")
         except ValueError as err:
             print(f"Login failed: {err}")

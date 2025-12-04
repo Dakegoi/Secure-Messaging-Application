@@ -33,7 +33,10 @@
           <form id="register-form">
             <label>Username <input type="text" name="username" required /></label>
             <label>Email <input type="email" name="email" required /></label>
-            <label>Password <input type="password" name="password" required /></label>
+            <label>Password <input type="password" name="password" id="register-password" required /></label>
+            <small class="muted" id="password-hint">
+              Password must be at least 8 characters with at least one letter, one number, and one special character
+            </small>
             <button type="submit">Create Account</button>
           </form>
           <p class="muted">
@@ -49,6 +52,10 @@
           <form id="login-form">
             <label>Username or email <input type="text" name="username" required /></label>
             <label>Password <input type="password" name="password" required /></label>
+            <div id="totp-section" class="hidden">
+              <label>TOTP Code (6 digits) <input type="text" name="totp_token" maxlength="6" pattern="[0-9]{6}" /></label>
+              <small class="muted">Enter the 6-digit code from your authenticator app</small>
+            </div>
             <button type="submit">Login</button>
           </form>
           <p class="muted">
@@ -62,16 +69,29 @@
         </div>
       </section>
 
+      <section class="auth hidden" id="totp-setup-page">
+        <div class="card">
+          <h2>Set up Two-Factor Authentication</h2>
+          <p class="muted">Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.)</p>
+          <div id="totp-qr-container" style="text-align: center; margin: 1rem 0;">
+            <img id="totp-qr-code" alt="TOTP QR Code" style="max-width: 300px;" />
+          </div>
+          <p class="muted"><strong>Secret:</strong> <code id="totp-secret"></code></p>
+          <p class="muted">After scanning, you'll be asked for a TOTP code on login.</p>
+          <button id="totp-setup-done-btn">Done</button>
+        </div>
+      </section>
+
       <section class="auth hidden" id="forgot-page">
         <div class="card">
           <h2>Forgot password?</h2>
           <p class="muted">
-            Enter the email you used for registration. For this demo, you will
-            see a 4-digit reset code on screen instead of receiving an email.
+            Enter the email you used for registration. A secure reset token will be generated
+            and sent to your email address (valid for 1 hour). Please check your inbox.
           </p>
           <form id="forgot-form">
             <label>Email <input type="email" name="email" required /></label>
-            <button type="submit">Send reset code</button>
+            <button type="submit">Send reset token</button>
           </form>
           <p class="muted">
             Remember it again?
@@ -97,6 +117,11 @@
               </label>
               <button type="submit">Send</button>
             </form>
+          </div>
+          <div style="margin-top: 1rem;">
+            <h4>Security Settings</h4>
+            <button id="setup-totp-btn">Set up Two-Factor Authentication</button>
+            <button id="disable-totp-btn" class="hidden">Disable Two-Factor Authentication</button>
           </div>
         </div>
 
