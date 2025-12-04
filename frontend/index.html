@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Secure Messaging</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <h1>Secure Messaging</h1>
+        <p>End-to-end encrypted demo chat</p>
+      </header>
+
+      <section id="home-page">
+        <div class="card">
+          <h2>Welcome</h2>
+          <p>
+            This is a simple end-to-end encrypted messaging demo. Create an account,
+            log in, and exchange messages with other users on this server.
+          </p>
+          <div class="home-actions">
+            <button id="get-started-btn">Sign up</button>
+            <button id="go-login-btn-home" class="secondary">Log in</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="auth hidden" id="signup-page">
+        <div class="card">
+          <h2>Sign up</h2>
+          <form id="register-form">
+            <label>Username <input type="text" name="username" required /></label>
+            <label>Email <input type="email" name="email" required /></label>
+            <label>Password <input type="password" name="password" required /></label>
+            <button type="submit">Create Account</button>
+          </form>
+          <p class="muted">
+            Already have an account?
+            <button type="button" id="go-login-btn" class="link-button">Log in</button>
+          </p>
+        </div>
+      </section>
+
+      <section class="auth hidden" id="login-page">
+        <div class="card">
+          <h2>Log in</h2>
+          <form id="login-form">
+            <label>Username or email <input type="text" name="username" required /></label>
+            <label>Password <input type="password" name="password" required /></label>
+            <button type="submit">Login</button>
+          </form>
+          <p class="muted">
+            New here?
+            <button type="button" id="go-signup-btn" class="link-button">Create an account</button>
+          </p>
+          <p class="muted">
+            Forgot your password?
+            <button type="button" id="go-forgot-btn" class="link-button">Reset password</button>
+          </p>
+        </div>
+      </section>
+
+      <section class="auth hidden" id="forgot-page">
+        <div class="card">
+          <h2>Forgot password?</h2>
+          <p class="muted">
+            Enter the email you used for registration. For this demo, you will
+            see a 4-digit reset code on screen instead of receiving an email.
+          </p>
+          <form id="forgot-form">
+            <label>Email <input type="email" name="email" required /></label>
+            <button type="submit">Send reset code</button>
+          </form>
+          <p class="muted">
+            Remember it again?
+            <button type="button" id="go-login-from-forgot" class="link-button">Back to login</button>
+          </p>
+        </div>
+      </section>
+
+      <section class="app-area hidden" id="app-page">
+        <div class="card">
+          <div class="session-info">
+            <span id="session-user"></span>
+            <button id="logout-btn">Logout</button>
+          </div>
+          <div>
+            <h3>Send Message</h3>
+            <form id="send-form">
+              <label>Recipient
+                <select id="recipient-select" required></select>
+              </label>
+              <label>Message
+                <textarea id="message-input" rows="3" required></textarea>
+              </label>
+              <button type="submit">Send</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Group message</h3>
+          <form id="group-send-form">
+            <label>Recipients (comma-separated usernames)
+              <input type="text" id="group-recipients" placeholder="alice,bob,charlie" />
+            </label>
+            <label>Message
+              <textarea id="group-message-input" rows="3"></textarea>
+            </label>
+            <button type="submit">Send to group</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h3>Inbox</h3>
+          <div id="inbox"></div>
+        </div>
+      </section>
+
+      <div id="toast" class="toast hidden"></div>
+    </div>
+    <script src="app.js" type="module"></script>
+  </body>
+</html>
