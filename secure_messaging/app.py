@@ -217,16 +217,19 @@ class MessagingService:
             raise ValueError("Recipient not found")
         recipient_public = recipient["public"]
         eph_private = x25519.X25519PrivateKey.generate()
-        aes_key, _ = crypto.derive_message_key(
+        aes_key, hmac_key = crypto.derive_message_key(
             eph_private, crypto.b64decode(recipient_public["x25519"])
         )
-        nonce, ciphertext = crypto.encrypt_message(aes_key, plaintext.encode("utf-8"))
+        # encrypt_message now returns a dict with nonce, ciphertext, and hmac (all base64-encoded)
+        # Pass both AES key and HMAC key for defense-in-depth
+        encrypted = crypto.encrypt_message(aes_key, plaintext.encode("utf-8"), hmac_key)
         envelope = {
             "sender": session.username,
             "recipient": recipient_username,
             "timestamp": datetime.utcnow().isoformat(),
-            "nonce": crypto.b64encode(nonce),
-            "ciphertext": crypto.b64encode(ciphertext),
+            "nonce": encrypted["nonce"],
+            "ciphertext": encrypted["ciphertext"],
+            "hmac": encrypted["hmac"],
             "ephemeral_pub": crypto.b64encode(
                 eph_private.public_key().public_bytes(
                     encoding=serialization.Encoding.Raw,
@@ -253,17 +256,29 @@ class MessagingService:
                     payload,
                     crypto.b64decode(msg["signature"]),
                 )
-            shared_key, _ = crypto.derive_message_key(
+            aes_key, hmac_key = crypto.derive_message_key(
                 session.secrets.x25519_private,
                 crypto.b64decode(msg["ephemeral_pub"]),
             )
             plaintext = ""
             try:
-                plaintext_bytes = crypto.decrypt_message(
-                    shared_key,
-                    crypto.b64decode(msg["nonce"]),
-                    crypto.b64decode(msg["ciphertext"]),
-                )
+                # decrypt_message now takes a dict with nonce, ciphertext, and hmac
+                # It verifies HMAC before decrypting
+                encrypted_data = {
+                    "nonce": msg["nonce"],
+                    "ciphertext": msg["ciphertext"],
+                    "hmac": msg.get("hmac", ""),  # Support old messages without HMAC (backward compat)
+                }
+                # If HMAC is missing (old message), skip HMAC verification
+                if not encrypted_data.get("hmac"):
+                    # Fallback for messages created before HMAC was added
+                    plaintext_bytes = crypto.decrypt_message_legacy(
+                        aes_key,
+                        crypto.b64decode(msg["nonce"]),
+                        crypto.b64decode(msg["ciphertext"]),
+                    )
+                else:
+                    plaintext_bytes = crypto.decrypt_message(aes_key, encrypted_data, hmac_key)
                 plaintext = plaintext_bytes.decode("utf-8")
             except Exception as exc:  # pragma: no cover - displayed to user
                 plaintext = f"<decryption failed: {exc}>"

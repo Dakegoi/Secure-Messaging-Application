@@ -49,6 +49,11 @@ class Database:
                 """
             )
             # Lightweight schema evolution for existing DBs
+            # Add hmac column for HMAC-SHA256 integrity verification
+            try:
+                conn.execute("ALTER TABLE messages ADD COLUMN hmac TEXT")
+            except sqlite3.OperationalError:
+                pass
             try:
                 conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
             except sqlite3.OperationalError:
@@ -180,11 +185,12 @@ class Database:
 
     # Message helpers ------------------------------------------------------
     def add_message(self, message: dict) -> None:
+        """Store an encrypted message with HMAC."""
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO messages (sender, recipient, timestamp, nonce, ciphertext, ephemeral_pub, signature)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (sender, recipient, timestamp, nonce, ciphertext, ephemeral_pub, signature, hmac)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message["sender"],
@@ -194,15 +200,17 @@ class Database:
                     message["ciphertext"],
                     message["ephemeral_pub"],
                     message["signature"],
+                    message.get("hmac"),  # May be None for old messages
                 ),
             )
             conn.commit()
 
     def messages_for_user(self, username: str) -> List[dict]:
+        """Retrieve messages for a user, including HMAC if present."""
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT sender, recipient, timestamp, nonce, ciphertext, ephemeral_pub, signature
+                SELECT sender, recipient, timestamp, nonce, ciphertext, ephemeral_pub, signature, hmac
                 FROM messages
                 WHERE recipient = ?
                 ORDER BY id DESC
